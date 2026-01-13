@@ -3,63 +3,76 @@ import google.generativeai as genai
 import requests
 from bs4 import BeautifulSoup
 
-def scrape_with_metadata(url):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+def scrape_bolius(url):
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.encoding = 'utf-8'
-        soup = BeautifulSoup(response.text, 'html.parser')
+        res = requests.get(url, headers=headers, timeout=10)
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 1. Ekstraher Metadata (Keywords)
-        keywords = []
-        meta_keywords = soup.find("meta", attrs={"itemprop": "keywords"})
-        if meta_keywords:
-            keywords = [k.strip() for k in meta_keywords["content"].split(",")]
-        
-        # 2. Hent Titel og Brødtekst
+        # Metadata & Titel
+        meta = soup.find("meta", attrs={"itemprop": "keywords"})
+        keywords = [k.strip() for k in meta["content"].split(",")] if meta else []
         title = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Ingen titel"
         
+        # Rens brødtekst
         for noise in soup(["script", "style", "nav", "footer", "aside"]):
             noise.extract()
-            
-        paragraphs = soup.find_all(['p', 'h2', 'h3'])
-        text = "\n\n".join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 40])
+        text = "\n\n".join([p.get_text(strip=True) for p in soup.find_all(['p', 'h2', 'h3']) if len(p.get_text()) > 40])
         
         return title, text, keywords
     except Exception as e:
-        return "Fejl", str(e), []
+        return None, str(e), []
 
-st.title("🏠 Bolius Metadata & Cluster-Catcher")
+def search_bolius_cluster(keyword):
+    search_url = f"https://www.bolius.dk/soeg?q={keyword}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        res = requests.get(search_url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # Finder typisk overskrifter i søgeresultater
+        results = []
+        for a in soup.select('.search-results__item a')[:3]: # De 3 øverste resultater
+            results.append({'title': a.get_text(strip=True), 'url': a['href']})
+        return results
+    except:
+        return []
+
+st.title("🏠 Bolius Cluster-Search & FAQ")
 api_key = st.sidebar.text_input("Gemini API Key:", type="password")
 
 if api_key:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash-lite')
 
-    url_input = st.text_input("Indlæs Bolius-URL:")
-    if st.button("Analysér Artikel"):
-        with st.spinner("Henter data og keywords..."):
-            title, text, keywords = scrape_with_metadata(url_input)
-            st.session_state.current_title = title
-            st.session_state.current_text = text
-            st.session_state.current_keywords = keywords
-
-    if 'current_title' in st.session_state:
-        st.subheader(f"📍 {st.session_state.current_title}")
+    url_input = st.text_input("Indlæs artikel-URL:")
+    if url_input:
+        title, text, keywords = scrape_bolius(url_input)
+        st.session_state.current_text = text
         
-        # Vis Keywords som Tags
-        if st.session_state.current_keywords:
-            st.write("**Redaktionelle Keywords (Tags):**")
-            cols = st.columns(len(st.session_state.current_keywords))
-            for i, tag in enumerate(st.session_state.current_keywords):
-                cols[i].button(tag, key=f"tag_{i}", disabled=True)
-        
-        # Brug keywords i prompten
-        if st.button("Generér Smart Header baseret på tags"):
-            tags_str = ", ".join(st.session_state.current_keywords)
-            prompt = f"Du er ekspert i {tags_str}. Lav et resumé af denne tekst med fokus på disse emner: {st.session_state.current_text}"
-            res = model.generate_content(prompt)
-            st.info(res.text)
+        # --- SEKTION 1: 3 FAQ ---
+        st.subheader("💡 3 hurtige svar fra artiklen")
+        if st.button("Generér FAQ"):
+            res = model.generate_content(f"Lav præcis 3 FAQ (spørgsmål/svar) baseret på: {text}")
+            st.write(res.text)
 
-else:
-    st.info("Indtast API-nøgle.")
+        st.divider()
+
+        # --- SEKTION 2: CLUSTER SØGNING ---
+        st.subheader("🔍 Find relateret viden (Cluster)")
+        if keywords:
+            target_keyword = keywords[-1] # Vi tager det mest specifikke (sidste) tag
+            if st.button(f"Søg efter mere om '{target_keyword}'"):
+                results = search_bolius_cluster(target_keyword)
+                for rel in results:
+                    st.write(f"- [{rel['title']}]({rel['url']})")
+        
+        # --- SEKTION 3: GAP-CATCHER ---
+        st.subheader("❓ Spørg artiklen")
+        query = st.text_input("Stil et spørgsmål:")
+        if query:
+            res = model.generate_content(f"Svar kort på '{query}' ud fra: {text}. Svar 'GAP_DETECTED' hvis info mangler.").text
+            if "GAP_DETECTED" in res:
+                st.error("Videnshul logget.")
+            else:
+                st.success(res)
