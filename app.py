@@ -4,9 +4,9 @@ import requests
 from bs4 import BeautifulSoup
 import os
 
-# --- 1. KONFIGURATION & SCRAPER ---
-st.set_page_config(page_title="Bolius Cluster-Catcher", layout="wide")
+st.set_page_config(page_title="Bolius Cluster-Catcher v6.0", layout="wide")
 
+# --- 1. SCRAPER LOGIK ---
 def scrape_content(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
     try:
@@ -14,62 +14,69 @@ def scrape_content(url):
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Titel
+        # Metadata & Titel
         title = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Ingen titel"
-        
-        # Metadata (Keywords)
         meta = soup.find("meta", attrs={"itemprop": "keywords"})
         keywords = [k.strip() for k in meta["content"].split(",")] if meta else []
 
-        # Find alle interne links i brødteksten
+        # Bredere link-ekstraktion
         links = []
-        for a in soup.select('article a[href*="bolius.dk"]'):
-            if a['href'].startswith('http') and len(a.get_text(strip=True)) > 2:
-                links.append({'title': a.get_text(strip=True), 'url': a['href']})
+        for a in soup.find_all('a', href=True):
+            link_url = a['href']
+            link_text = a.get_text(strip=True)
+            # Rens og filtrer links
+            if 'bolius.dk' in link_url and len(link_text) > 3:
+                if link_url.startswith('/'): link_url = "https://www.bolius.dk" + link_url
+                if link_url not in [l['url'] for l in links] and url not in link_url:
+                    if not any(x in link_url for x in ['/om-bolius/', 'nyhedsbrev', 'facebook']):
+                        links.append({'title': link_text, 'url': link_url})
         
-        # Rens brødtekst
+        # Rens tekst
         for noise in soup(["script", "style", "nav", "footer", "aside", "form"]):
             noise.extract()
         paragraphs = soup.find_all(['p', 'h2', 'h3'])
         text = "\n\n".join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 40])
         
-        return title, text, links, keywords
+        return title, text, links[:15], keywords # Top 15 links
     except Exception as e:
         return "Fejl", str(e), [], []
 
-# --- 2. UI & API OPSÆTNING ---
-st.title("🏠 Bolius Cluster-Catcher PoC")
+# --- 2. UI & INITIALISERING ---
+st.title("🏠 Bolius Cluster-Catcher")
 api_key = st.sidebar.text_input("Gemini API Key:", type="password")
 
 if api_key:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash-lite')
 
-    url_input = st.text_input("Indlæs primær artikel URL:", placeholder="https://www.bolius.dk/...")
+    url_input = st.text_input("Indlæs primær artikel URL:")
 
     if url_input:
-        # Hent primær artikel hvis den ikke er hentet før
         if 'main_url' not in st.session_state or st.session_state.main_url != url_input:
-            with st.spinner("Henter primær artikel..."):
+            with st.spinner("Henter data..."):
                 title, text, links, keywords = scrape_content(url_input)
                 st.session_state.main_url = url_input
                 st.session_state.main_title = title
                 st.session_state.main_text = f"KILDE URL: {url_input}\nINDHOLD:\n{text}"
                 st.session_state.found_links = links
-                st.session_state.cluster_text = st.session_state.main_text # Start med kun én artikel
-        
-        st.subheader(f"📍 {st.session_state.main_title}")
+                st.session_state.cluster_text = st.session_state.main_text
+                st.session_state.keywords = keywords
 
-        # --- 3. CLUSTER BYGNING ---
+        st.subheader(f"📍 {st.session_state.main_title}")
+        if st.session_state.keywords:
+            st.caption(f"Tags: {', '.join(st.session_state.keywords)}")
+
+        # --- 3. CLUSTER SEKTION ---
+        st.write("---")
+        st.subheader("🔗 Udvid vidensgrundlag (Cluster)")
         if st.session_state.found_links:
-            with st.expander("🔗 Findes svaret i en af disse relaterede artikler? (Vælg for at inkludere)"):
-                # Vi bruger en form til at vælge links
+            with st.expander("Findes svaret i en af disse relaterede artikler?"):
                 selected_urls = []
-                for i, link in enumerate(st.session_state.found_links[:10]): # Vis top 10 links
+                for i, link in enumerate(st.session_state.found_links):
                     if st.checkbox(f"{link['title']}", key=f"link_{i}"):
                         selected_urls.append(link['url'])
                 
-                if st.button("Opdatér AI-hukommelse med valgte artikler"):
+                if st.button("Opdatér AI-hukommelse"):
                     combined_text = st.session_state.main_text
                     for l_url in selected_urls:
                         with st.spinner(f"Læser: {l_url}..."):
@@ -77,36 +84,28 @@ if api_key:
                             combined_text += f"\n\n---\nKILDE URL: {l_url}\nINDHOLD:\n{l_text}"
                     st.session_state.cluster_text = combined_text
                     st.success(f"AI kender nu {len(selected_urls) + 1} artikler.")
+        else:
+            st.warning("Ingen relevante interne links fundet.")
 
-        st.divider()
-
-        # --- 4. SPØRGSMÅL & CITERING ---
-        query = st.text_input("Stil et spørgsmål (AI søger i alle valgte artikler):")
+        # --- 4. GAP-CATCHER ---
+        st.write("---")
+        query = st.text_input("Spørg artiklen (AI søger i hele clusteret):")
         
         if query:
-            # Prompten der tvinger citation
             prompt = f"""
-            Du er en fagekspert fra Bolius. Svar kort og præcist på: '{query}'
-            
-            Brug KUN den leverede tekst som kilde. 
-            Hvis du finder svaret, SKAL du afslutte dit svar med at skrive: 
-            "Læs mere her: [Indsæt den relevante KILDE URL fra teksten]".
-            
-            Hvis svaret ikke findes i teksten, skal du svare KUN: GAP_DETECTED.
+            Du er fagekspert fra Bolius. Svar kort på: '{query}'
+            Brug KUN den leverede tekst. 
+            Hvis svaret findes, SKAL du afslutte med: "Læs mere her: [KILDE URL]".
+            Hvis svaret mangler, svar KUN: GAP_DETECTED.
             
             TEKSTGRUNDLAG:
             {st.session_state.cluster_text}
             """
-            
-            with st.spinner("Søger efter svar..."):
-                response = model.generate_content(prompt).text
-                
-                if "GAP_DETECTED" in response:
-                    st.error("⚠️ Videnshul: Svaret findes ikke i de valgte artikler.")
-                    with open("gaps.txt", "a", encoding="utf-8") as f:
-                        f.write(f"Cluster-start: {url_input} | Spørgsmål: {query}\n")
+            with st.spinner("Søger..."):
+                res = model.generate_content(prompt).text
+                if "GAP_DETECTED" in res:
+                    st.error("⚠️ Videnshul fundet i clusteret.")
                 else:
-                    st.success(response)
-
+                    st.success(res)
 else:
-    st.info("Indtast venligst din API-nøgle i sidebaren.")
+    st.info("Indtast API-nøgle i sidebaren.")
