@@ -20,11 +20,3 @@ def scrape_bolius_final(url):
         return title, full_text
     except Exception as e:
         return "Fejl", str(e)
-
-if st.checkbox("Vis rå HTML-struktur (Debug)"):
-    # Vi henter den rå HTML fra session_state, hvis den findes
-    if 'current_text' in st.session_state:
-        # For at debugge skal vi bruge BeautifulSoup på den rå tekst igen
-        # Bemærk: Dette kræver at vi gemmer den rå HTML, ikke kun den rensede tekst
-        st.info("Debug-info er begrænset til renset tekst i denne version.")
-        st.code(st.session_state.current_text[:1000])
