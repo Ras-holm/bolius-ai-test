@@ -13,7 +13,7 @@ api_key = st.sidebar.text_input("Indtast Gemini API Key:", type="password")
 
 if api_key:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-pro')
+    model = genai.GenerativeModel('models/gemini-1.5-flash')
 
     # Input: Her indsætter du artiklens tekst (senere kan vi automatisere dette)
     article_text = st.text_area("Indsæt artiklens tekst her:", height=200, placeholder="Kopiér teksten fra en Bolius-artikel...")
