@@ -94,3 +94,12 @@ if api_key:
                 st.success(res.text)
 else:
     st.info("Indtast API-nøgle i sidebaren.")
+# Tilføj dette i din Streamlit app under scraping-sektionen
+if st.checkbox("Vis rå HTML-struktur (Debug)"):
+    # Finder alle div-klasser på siden for at se hvad vi har at arbejde med
+    all_divs = soup.find_all('div', class_=True)
+    classes = set([tuple(d['class']) for d in all_divs])
+    st.write("Fundne CSS-klasser på siden:", classes)
+    
+    # Vis de første 2000 tegn af den rå HTML
+    st.code(response.text[:2000], language="html")
