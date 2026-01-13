@@ -4,9 +4,8 @@ import requests
 from bs4 import BeautifulSoup
 import os
 
-st.set_page_config(page_title="Bolius Cluster-Catcher v6.0", layout="wide")
+st.set_page_config(page_title="Bolius Cluster-Catcher v6.1", layout="wide")
 
-# --- 1. SCRAPER LOGIK ---
 def scrape_content(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
     try:
@@ -14,34 +13,30 @@ def scrape_content(url):
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Metadata & Titel
         title = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Ingen titel"
         meta = soup.find("meta", attrs={"itemprop": "keywords"})
         keywords = [k.strip() for k in meta["content"].split(",")] if meta else []
 
-        # Bredere link-ekstraktion
         links = []
         for a in soup.find_all('a', href=True):
             link_url = a['href']
             link_text = a.get_text(strip=True)
-            # Rens og filtrer links
             if 'bolius.dk' in link_url and len(link_text) > 3:
                 if link_url.startswith('/'): link_url = "https://www.bolius.dk" + link_url
                 if link_url not in [l['url'] for l in links] and url not in link_url:
                     if not any(x in link_url for x in ['/om-bolius/', 'nyhedsbrev', 'facebook']):
                         links.append({'title': link_text, 'url': link_url})
         
-        # Rens tekst
         for noise in soup(["script", "style", "nav", "footer", "aside", "form"]):
             noise.extract()
         paragraphs = soup.find_all(['p', 'h2', 'h3'])
         text = "\n\n".join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 40])
         
-        return title, text, links[:15], keywords # Top 15 links
+        return title, text, links[:15], keywords
     except Exception as e:
         return "Fejl", str(e), [], []
 
-# --- 2. UI & INITIALISERING ---
+# --- UI ---
 st.title("🏠 Bolius Cluster-Catcher")
 api_key = st.sidebar.text_input("Gemini API Key:", type="password")
 
@@ -62,17 +57,23 @@ if api_key:
                 st.session_state.cluster_text = st.session_state.main_text
                 st.session_state.keywords = keywords
 
-        st.subheader(f"📍 {st.session_state.main_title}")
-        if st.session_state.keywords:
-            st.caption(f"Tags: {', '.join(st.session_state.keywords)}")
+        # Brug .get() for at undgå KeyError
+        current_title = st.session_state.get('main_title', "Indlæser...")
+        st.subheader(f"📍 {current_title}")
+        
+        keywords = st.session_state.get('keywords', [])
+        if keywords:
+            st.caption(f"Tags: {', '.join(keywords)}")
 
-        # --- 3. CLUSTER SEKTION ---
+        # --- CLUSTER SEKTION ---
         st.write("---")
         st.subheader("🔗 Udvid vidensgrundlag (Cluster)")
-        if st.session_state.found_links:
+        found_links = st.session_state.get('found_links', [])
+        
+        if found_links:
             with st.expander("Findes svaret i en af disse relaterede artikler?"):
                 selected_urls = []
-                for i, link in enumerate(st.session_state.found_links):
+                for i, link in enumerate(found_links):
                     if st.checkbox(f"{link['title']}", key=f"link_{i}"):
                         selected_urls.append(link['url'])
                 
@@ -87,11 +88,12 @@ if api_key:
         else:
             st.warning("Ingen relevante interne links fundet.")
 
-        # --- 4. GAP-CATCHER ---
+        # --- GAP-CATCHER ---
         st.write("---")
         query = st.text_input("Spørg artiklen (AI søger i hele clusteret):")
         
         if query:
+            cluster_text = st.session_state.get('cluster_text', st.session_state.get('main_text', ""))
             prompt = f"""
             Du er fagekspert fra Bolius. Svar kort på: '{query}'
             Brug KUN den leverede tekst. 
@@ -99,7 +101,7 @@ if api_key:
             Hvis svaret mangler, svar KUN: GAP_DETECTED.
             
             TEKSTGRUNDLAG:
-            {st.session_state.cluster_text}
+            {cluster_text}
             """
             with st.spinner("Søger..."):
                 res = model.generate_content(prompt).text
