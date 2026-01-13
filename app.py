@@ -1,62 +1,63 @@
 import streamlit as st
 import google.generativeai as genai
+from google.api_core import exceptions
+import os
 
-st.set_page_config(page_title="Bolius Smart Header & Gap-Catcher", layout="wide")
+st.set_page_config(page_title="Bolius Prototype", layout="wide")
 
-# Sidebar
+# Opsætning af API
 api_key = st.sidebar.text_input("Gemini API Key:", type="password")
 
-st.title("🏠 Bolius Videns-Widget")
+# Funktion til logning af videnshuller
+def log_gap(query):
+    with open("videnshuller.txt", "a", encoding="utf-8") as f:
+        f.write(f"{query}\n")
 
 if api_key:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash-lite')
 
-    article_text = st.text_area("Indsæt artiklens tekst:", height=250)
+        # Cache funktionen så vi sparer penge/kvote
+        @st.cache_data
+        def get_smart_header(text):
+            prompt = f"Giv 3 korte pointer og 3 FAQ baseret på denne tekst: {text}"
+            return model.generate_content(prompt).text
 
-    if article_text:
-        # --- DEL 1: AUTOMATISK SMART HEADER ---
-        if st.button("Generér Smart Header & FAQ"):
-            with st.spinner("Analyserer artikel..."):
-                header_prompt = f"""
-                Analysér artiklen og giv:
-                1. 3 korte bulletpoints med de vigtigste pointer.
-                2. 3 FAQ-spørgsmål, som denne artikel giver svar på.
-                
-                Artikel: {article_text}
-                """
-                header_res = model.generate_content(header_prompt)
-                
-                st.markdown("### ⚡ Hurtigt overblik & FAQ")
-                st.info(header_res.text)
+        article_text = st.text_area("Indsæt artiklens tekst:", height=200)
 
-        st.divider()
+        if article_text:
+            # 1. Smart Header (Gemmes i cache)
+            if st.button("Generér/Vis Smart Header"):
+                try:
+                    header = get_smart_header(article_text)
+                    st.info(header)
+                except exceptions.ResourceExhausted:
+                    st.error("Kvote nået. Vent 60 sek.")
 
-        # --- DEL 2: INTERAKTIV GAP-CATCHER ---
-        st.subheader("🔍 Spørg artiklen (Gap-Catcher)")
-        user_query = st.text_input("Hvad mangler du svar på?")
+            st.divider()
 
-        if user_query:
-            gap_prompt = f"""
-            Svar på spørgsmålet baseret KUN på denne tekst: {article_text}
-            Hvis svaret IKKE findes i teksten, svar præcis: "GAP_DETECTED".
-            Ellers giv et kort svar.
-            
-            Spørgsmål: {user_query}
-            """
-            response = model.generate_content(gap_prompt)
-            
-            if "GAP_DETECTED" in response.text:
-                st.error("⚠️ Videnshul! Dette emne dækkes ikke i artiklen.")
-                st.session_state.setdefault('gaps', []).append(user_query)
-            else:
-                st.success("Svar fundet:")
-                st.write(response.text)
+            # 2. Gap-Catcher
+            user_query = st.text_input("Spørg artiklen:")
+            if user_query:
+                try:
+                    res = model.generate_content(f"Svar kort på '{user_query}' baseret på: {article_text}. Hvis svaret mangler, svar 'GAP_DETECTED'.").text
+                    if "GAP_DETECTED" in res:
+                        st.error("⚠️ Videnshul fundet!")
+                        log_gap(user_query) # Gemmer til filen
+                        st.success(f"'{user_query}' er logget til redaktionen.")
+                    else:
+                        st.write(res)
+                except exceptions.ResourceExhausted:
+                    st.error("Kvote nået.")
 
-        # --- DEL 3: REDAKTIONEL LOG ---
-        if 'gaps' in st.session_state and st.session_state['gaps']:
-            with st.expander("📋 Se opsamlede videnshuller (til redaktionen)"):
-                for gap in st.session_state['gaps']:
-                    st.write(f"• {gap}")
+            # 3. Vis loggen (til dit møde)
+            if os.path.exists("videnshuller.txt"):
+                with st.expander("📊 Se opsamlede data (kun for admin)"):
+                    with open("videnshuller.txt", "r", encoding="utf-8") as f:
+                        st.text(f.read())
+
+    except Exception as e:
+        st.error(f"Fejl: {e}")
 else:
-    st.info("Indtast API-nøgle for at starte.")
+    st.info("Indtast API-nøgle.")
