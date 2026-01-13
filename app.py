@@ -1,87 +1,78 @@
 import streamlit as st
 import google.generativeai as genai
-from google.api_core import exceptions
 import requests
 from bs4 import BeautifulSoup
-import os
 
-st.set_page_config(page_title="Bolius URL-Widget", layout="wide")
+st.set_page_config(page_title="Bolius Scraper Fix", layout="wide")
 
+# Sidebar
 api_key = st.sidebar.text_input("Gemini API Key:", type="password")
 
-# --- Hjælpefunktion: Scraper ---
-def scrape_bolius(url):
+def scrape_bolius_v2(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Forsøger at ramme selve brødteksten og fjerne støj (menuer, reklamer)
-        article = soup.find('article') or soup.find('main')
-        if article:
-            # Fjern script og style elementer
-            for script in article(["script", "style"]):
-                script.extract()
-            return article.get_text(separator=' ', strip=True)
-        return "Kunne ikke finde hovedindholdet på siden."
+        # Hent titel for at verificere
+        title = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Ingen titel fundet"
+        
+        # Find brødteksten - Bolius bruger ofte specifikke tags eller classes
+        # Vi prøver at fange de primære tekst-containere
+        content_parts = []
+        # Finder typisk tekst i 'article' men undgår sidebar
+        main_content = soup.find('article')
+        if main_content:
+            paragraphs = main_content.find_all(['p', 'h2', 'h3'])
+            for p in paragraphs:
+                content_parts.append(p.get_text(strip=True))
+        
+        full_text = " ".join(content_parts)
+        return title, full_text
     except Exception as e:
-        return f"Fejl ved hentning af URL: {e}"
+        return "Fejl", f"Kunne ikke hente siden: {e}"
 
-# --- Interface ---
-st.title("🏠 Bolius URL-Widget & Gap-Catcher")
+st.title("🏠 Bolius Videns-Widget v2.0")
 
 if api_key:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash-lite')
 
-    url_input = st.text_input("Indsæt Bolius-URL her:", placeholder="https://www.bolius.dk/...")
+    url_input = st.text_input("Indsæt Bolius-URL:", key="url_field")
 
-    if url_input:
-        if 'last_url' not in st.session_state or st.session_state.last_url != url_input:
-            with st.spinner("Læser artiklen..."):
-                st.session_state.article_text = scrape_bolius(url_input)
-                st.session_state.last_url = url_input
-                st.session_state.smart_header = "" # Nulstil ved ny URL
+    if st.button("Hent og analysér artikel"):
+        with st.spinner("Henter indhold..."):
+            title, text = scrape_bolius_v2(url_input)
+            st.session_state.current_title = title
+            st.session_state.current_text = text
+            # Nulstil resultater ved ny artikel
+            st.session_state.smart_res = ""
 
-        if st.session_state.article_text:
-            # Vis et lille uddrag af den læste tekst for kontrol
-            with st.expander("Se indlæst tekst"):
-                st.write(st.session_state.article_text[:1000] + "...")
+    if 'current_title' in st.session_state:
+        st.subheader(f"Indlæst: {st.session_state.current_title}")
+        
+        # Her tjekker vi om titlen rent faktisk passer med din URL
+        if "skægkræ" in st.session_state.current_title.lower() and "tilbygning" in url_input.lower():
+            st.error("FEJL: Scraperen har fat i en forkert artikel (sandsynligvis fra en sidebar).")
+        
+        with st.expander("Se den indlæste tekst"):
+            st.write(st.session_state.current_text[:1500] + "...")
 
-            # Smart Header & FAQ
-            if st.button("Generér Smart Header & FAQ"):
-                try:
-                    res = model.generate_content(f"Giv 3 pointer og 3 FAQ baseret på: {st.session_state.article_text}")
-                    st.session_state.smart_header = res.text
-                except exceptions.ResourceExhausted:
-                    st.error("Kvote nået. Vent 60 sek.")
+        if st.button("Generér Smart Header"):
+            res = model.generate_content(f"Lav resumé og 3 FAQ baseret på: {st.session_state.current_text}")
+            st.session_state.smart_res = res.text
+        
+        if 'smart_res' in st.session_state and st.session_state.smart_res:
+            st.info(st.session_state.smart_res)
 
-            if st.session_state.smart_header:
-                st.info(st.session_state.smart_header)
-
-            st.divider()
-
-            # Gap-Catcher
-            user_query = st.text_input("Stil et uddybende spørgsmål:")
-            if st.button("Søg efter svar") and user_query:
-                try:
-                    prompt = f"Svar på '{user_query}' baseret på teksten. Hvis svaret mangler, svar KUN 'GAP_DETECTED'. Tekst: {st.session_state.article_text}"
-                    res = model.generate_content(prompt).text
-                    if "GAP_DETECTED" in res:
-                        st.error("⚠️ Videnshul fundet!")
-                        # Logning til fil
-                        with open("gaps.txt", "a") as f:
-                            f.write(f"URL: {url_input} | Spørgsmål: {user_query}\n")
-                    else:
-                        st.success(res)
-                except exceptions.ResourceExhausted:
-                    st.error("Kvote nået.")
-
-    # Vis loggen til admin
-    if os.path.exists("gaps.txt"):
-        with st.expander("📊 Log (Admin)"):
-            with open("gaps.txt", "r") as f:
-                st.text(f.read())
+        # Gap-Catcher
+        query = st.text_input("Spørg artiklen:")
+        if query:
+            res = model.generate_content(f"Svar kort på '{query}' ud fra teksten. Svar 'GAP_DETECTED' hvis info mangler. Tekst: {st.session_state.current_text}")
+            if "GAP_DETECTED" in res.text:
+                st.warning("Videnshul fundet!")
+            else:
+                st.success(res.text)
 else:
-    st.info("Indtast API-nøgle.")
+    st.info("Indtast API-nøgle")
