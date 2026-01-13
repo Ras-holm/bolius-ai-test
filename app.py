@@ -93,4 +93,10 @@ if api_key:
                             st.success(res)
 
     # Admin log sektion
-    if os.path.exists("gaps.txt"):
+if os.path.exists("gaps.txt"):
+        with st.expander("📊 Redaktionel Log (Videnshuller)"):
+            with open("gaps.txt", "r", encoding="utf-8") as f:
+                log_content = f.read()
+                st.text(log_content)
+else:
+    st.info("Start med at indsætte din API-nøgle i menuen til venstre.")
