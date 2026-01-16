@@ -1,101 +1,115 @@
-import os
-import requests
-from bs4 import BeautifulSoup
+import streamlit as st
 import google.generativeai as genai
+import datetime
 
-# --- Konfiguration ---
+# --- Konfiguration & UI ---
+st.set_page_config(page_title="BO - Bolius AI Sidebar", layout="wide")
 
-# 1. Definer BO's "hjerne" (System Prompt)
+# Styling af sidebaren for at simulere Bolius-look
+st.markdown("""
+    <style>
+    .stSidebar { background-color: #f9f9f9; border-left: 1px solid #ddd; }
+    .gap-warning { color: #d9534f; font-weight: bold; }
+    </style>
+""", unsafe_allow_html=True)
+
+# 1. API Opsætning
+try:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+except Exception:
+    st.error("API-nøgle mangler! Tilføj GOOGLE_API_KEY i Streamlit Secrets.")
+    st.stop()
+
+# 2. BO's Grundlov (System Instruction)
 BO_SYSTEM_INSTRUCTION = """
-Du er BO, en hjælpsom AI-assistent fra Bolius.dk.
-Din opgave er at besvare brugernes spørgsmål om bolig og have.
+Du er BO, en uvildig AI-assistent for Bolius. 
+Din opgave er at hjælpe brugere baseret på de udleverede dokumenter.
 
-REGLER FOR DINE SVAR:
-1. Du må KUN basere dit svar på den viden, du får udleveret i 'KONTEKST'.
-2. Hvis svaret IKKE findes i den leverede 'KONTEKST', skal du svare præcist: "Jeg kan desværre ikke finde svaret i min nuværende viden."
-3. Du må IKKE bruge generel viden eller information uden for 'KONTEKST'.
-4. Hold dine svar korte og præcise, og referér kun til informationen fra 'KONTEKST'.
-5. Tal dansk i en faglig, men letforståelig tone.
+REGLER FOR SVAR:
+1. KILDE-HIERARKI: 
+   - Prioritér altid "PRIMÆR_ARTIKEL". Hvis svaret findes her, giv et kort og præcist resumé.
+   - Hvis svaret ikke er i primær artikel, søg i "EMNE_CLUSTER". Hvis svaret findes her, giv ét kort svar (max 1 linje) efterfulgt af: "Læs mere her: [Link]".
+   - Hvis svaret IKKE findes i hverken primær artikel eller emne-cluster, skal du svare præcis: "GAP_DETECTED".
+
+2. TONE & STIL:
+   - Svar professionelt, neutralt og faktuelt på dansk.
+   - Undgå at anbefale specifikke mærker.
+   - Brug korrekte byggetekniske termer.
+
+3. BEGRÆNSNINGER:
+   - Brug ALDRIG din egen viden uden for kontekst.
+   - Ved tvivl, svar altid "GAP_DETECTED".
 """
 
-# 2. Opsæt Gemini API-nøgle (Husk at sætte din miljøvariabel)
-try:
-    genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
-except KeyError:
-    print("Fejl: GOOGLE_API_KEY er ikke sat. Afslutter.")
-    exit()
+# --- App Layout ---
+st.title("BO - Bolius AI Sidebar (MVP)")
 
-# 3. Definer kilde og spørgsmål for denne test
-URL_KILDE = "https://www.bolius.dk/saadan-mindsker-du-stoej-og-skjuler-varmepumpen-98283"
-BRUGER_SPØRGSMÅL = "Min nabos varmepumpe larmer. Har du nogle gode tips til hvad man kan gøre?"
+# Tabs til administration vs. brugeroplevelse
+tab1, tab2 = st.tabs(["🖥️ Brugerflade (Demo)", "⚙️ Datagrundlag (Admin)"])
 
+with tab2:
+    st.subheader("Indlæs viden til BO")
+    primær_tekst = st.text_area("Primær artikel (den brugeren læser lige nu):", height=200, placeholder="Indsæt tekst her...")
+    cluster_tekst = st.text_area("Emne-cluster (relateret viden):", height=300, placeholder="Indsæt tekst og links fra relaterede artikler her...")
 
-# --- Trin 1: RETRIEVAL (Hent data) ---
+with tab1:
+    col1, col2 = st.columns([2, 1])
 
-def fetch_article_text(url: str) -> str | None:
-    """
-    Henter alt tekstindhold fra en given URL.
-    Simpel version til MVP - fjerner HTML-tags.
-    """
-    print(f"Henter indhold fra: {url}...")
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()  # Stopper hvis der er fejl (f.eks. 404)
-        
-        # Brug BeautifulSoup til at "rense" HTML og kun få teksten
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # For Bolius.dk er hovedindholdet ofte i <article> tagget. Dette giver renere data.
-        main_content = soup.find('article')
-        if main_content:
-            return main_content.get_text(separator=' ', strip=True)
+    with col1:
+        st.info("👈 Indlæs data under fanen 'Datagrundlag' for at starte.")
+        st.markdown("### Simuleret Artikel-visning")
+        if primær_tekst:
+            st.markdown(primær_tekst[:500] + "...")
         else:
-            # Fallback hvis <article> ikke findes
-            return soup.get_text(separator=' ', strip=True)
+            st.write("Ingen artikel indlæst.")
 
-    except requests.RequestException as e:
-        print(f"Fejl under hentning af URL: {e}")
-        return None
-
-
-# --- Hovedlogik ---
-
-if __name__ == "__main__":
-    
-    # Kør Trin 1: Hent den relevante tekst fra Bolius.dk
-    kontekst_tekst = fetch_article_text(URL_KILDE)
-
-    if not kontekst_tekst:
-        print("Kunne ikke hente kontekst. Processen stopper.")
-    else:
-        print(f"Hentede succesfuldt {len(kontekst_tekst)} tegn som kontekst.\n")
-
-        # Initialiser Gemini-modellen med vores systeminstruktion
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=BO_SYSTEM_INSTRUCTION
-        )
-
-        # --- Trin 2: AUGMENTATION (Byg prompt) ---
-        final_prompt = f"""
-        KONTEKST:
-        ---
-        {kontekst_tekst}
-        ---
-
-        SPØRGSMÅL: {BRUGER_SPØRGSMÅL}
-        """
+    # SIDEBAR - Her bor BO
+    with st.sidebar:
+        st.header("🤖 Spørg BO")
+        user_input = st.text_input("Hvad vil du vide om emnet?", key="bo_input")
         
-        print("--- Sender følgende til Gemini (forkortet) ---")
-        print(f"SYSTEM INSTRUCTION: {BO_SYSTEM_INSTRUCTION[:100]}...")
-        print(f"KONTEKST: {kontekst_tekst[:200]}...")
-        print(f"SPØRGSMÅL: {BRUGER_SPØRGSMÅL}\n")
+        if st.button("Spørg BO"):
+            if not primær_tekst:
+                st.warning("Indlæs venligst data først.")
+            else:
+                model = genai.GenerativeModel(
+                    model_name="gemini-1.5-pro",
+                    system_instruction=BO_SYSTEM_INSTRUCTION
+                )
+                
+                full_prompt = f"""
+                PRIMÆR_ARTIKEL:
+                {primær_tekst}
+                
+                EMNE_CLUSTER:
+                {cluster_tekst}
+                
+                BRUGER_SPØRGSMÅL:
+                {user_input}
+                """
+                
+                with st.spinner("BO kigger i arkivet..."):
+                    response = model.generate_content(full_prompt)
+                    svar = response.text
+                    
+                    if "GAP_DETECTED" in svar:
+                        st.error("BO kunne ikke finde svaret i Bolius' viden.")
+                        st.markdown("<p class='gap-warning'>Spørgsmålet er logget til redaktionen.</p>", unsafe_allow_html=True)
+                        
+                        # Gapcatcher logning (simuleret via session state i demo)
+                        if 'gap_logs' not in st.session_state:
+                            st.session_state.gap_logs = []
+                        st.session_state.gap_logs.append({
+                            "tid": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "spørgsmål": user_input
+                        })
+                    else:
+                        st.success("Svar fra BO:")
+                        st.write(svar)
 
-
-        # --- Trin 3: GENERATION (Få svar fra AI) ---
-        print("--- BO's Svar ---")
-        try:
-            response = model.generate_content(final_prompt)
-            print(response.text)
-        except Exception as e:
-            print(f"Der opstod en fejl under kald til Gemini API: {e}")
+        # Visning af Gapcatcher logs (kun for dig i demo-fasen)
+        if st.checkbox("Vis Gapcatcher logs (Admin)"):
+            if 'gap_logs' in st.session_state and st.session_state.gap_logs:
+                st.write(st.session_state.gap_logs)
+            else:
+                st.write("Ingen ubesvarede spørgsmål endnu.")
